@@ -4,7 +4,8 @@
   "description": "Сервер Исполнитель Желаний с монетизацией",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "npm rebuild sqlite3 --target_platform=linux --target_arch=x64"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
