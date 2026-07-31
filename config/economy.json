@@ -1,0 +1,27 @@
+{
+  "commissionPercent": 10,
+  "services": {
+    "vip": {
+      "cost": 50,
+      "name": "⭐ VIP-желание",
+      "description": "Закреп в топе на 7 дней"
+    },
+    "urgent": {
+      "cost": 30,
+      "name": "🚀 Срочное желание",
+      "description": "Исполнение за 24 часа"
+    },
+    "anonymous": {
+      "cost": 20,
+      "name": "🔒 Анонимное желание",
+      "description": "Скрыть имя автора"
+    }
+  },
+  "coinPackages": {
+    "50": { "price": 29, "bonus": 0 },
+    "150": { "price": 79, "bonus": 20 },
+    "350": { "price": 149, "bonus": 60 },
+    "800": { "price": 299, "bonus": 200 },
+    "2000": { "price": 599, "bonus": 600 }
+  }
+}

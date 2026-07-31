@@ -5,18 +5,42 @@ const { v4: uuidv4 } = require('uuid');
 const WebSocket = require('ws');
 
 const app = express();
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
+const allowedOrigins = [
+  'https://ispolnitel-front-tuhanovos.amvera.io',
+  'https://id54645205.vk-miniapps.com',
+  'https://vk.com',
+  'http://localhost:3000',
+];
+
+app.use(cors({
+  origin: function(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log('❌ Блокируем CORS для:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 
 const db = new sqlite3.Database('./wishes.db');
+require('dotenv').config();
+const jwt = require('jsonwebtoken');
+const { z } = require('zod');
+const cors = require('cors');
+const economy = require('./config/economy.json');
+
+// =============================================
+// КОНФИГИ
+// =============================================
+const ADMIN_IDS = process.env.ADMIN_IDS?.split(',') || [];
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_key';
+const COIN_PACKAGES = economy.coinPackages;
+const SERVICES = economy.services;
+const COMMISSION_PERCENT = economy.commissionPercent;
 
 // =============================================
 // СОЗДАНИЕ ТАБЛИЦ
@@ -372,6 +396,13 @@ db.run(`
     ('withdrawal_commission', '10'),
     ('min_withdrawal', '500')
 `);
+
+  // Индексы
+  db.run(`CREATE INDEX IF NOT EXISTS idx_users_vk ON users(vk_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_wishes_category_status ON wishes(category, status)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_wishes_user_id ON wishes(user_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_contributions_wish_id ON contributions(wish_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_contributions_user_id ON contributions(user_id)`);
 });
 
 // =============================================
@@ -479,36 +510,92 @@ function addUpdate(type, data) {
 // =============================================
 
 // =============================================
-// ПОЛЬЗОВАТЕЛИ - ПРИНУДИТЕЛЬНАЯ ВЕРСИЯ
+// JWT MIDDLEWARE
 // =============================================
+const authMiddleware = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ error: 'Требуется авторизация' });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.userId = decoded.id;
+    next();
+  } catch (error) {
+    return res.status(401).json({ error: 'Неверный токен' });
+  }
+};
+
+// =============================================
+// ВАЛИДАЦИЯ (ZOD)
+// =============================================
+const wishSchema = z.object({
+  userId: z.string().min(1),
+  title: z.string().min(3).max(200),
+  description: z.string().min(3).max(2000),
+  category: z.enum(['education', 'creative', 'help', 'career', 'other']),
+  isAnonymous: z.boolean().optional(),
+  targetAmount: z.number().int().min(0).max(1000000).optional(),
+});
+
+const donateSchema = z.object({
+  wishId: z.string().min(1),
+  userId: z.string().min(1),
+  amount: z.number().int().min(1).max(1000000),
+  message: z.string().optional(),
+  isAnonymous: z.boolean().optional(),
+});
+
+const giftSchema = z.object({
+  fromUserId: z.string().min(1),
+  toUserId: z.string().min(1),
+  type: z.string().min(1),
+  message: z.string().optional(),
+});
+
+const serviceSchema = z.object({
+  userId: z.string().min(1),
+  serviceId: z.enum(['vip', 'urgent', 'anonymous']),
+  wishId: z.string().min(1),
+});
+
+const subscribeSchema = z.object({
+  userId: z.string().min(1),
+  plan: z.enum(['premium', 'business']),
+});
 
 app.post('/api/users', (req, res) => {
   const { id, vk_id, name, avatar } = req.body;
 
-  // ПРИНУДИТЕЛЬНАЯ ВСТАВКА С АДМИНОМ
   db.run(
     `INSERT OR REPLACE INTO users (id, vk_id, name, avatar, coins, is_admin)
      VALUES (?, ?, ?, ?, 50, ?)`,
-    [id, vk_id, name, avatar, id === '878430902' ? 1 : 0],
+    [id, vk_id, name, avatar, ADMIN_IDS.includes(id) ? 1 : 0],
     function(err) {
       if (err) {
         console.error('❌ Ошибка создания пользователя:', err);
         return res.status(400).json({ error: err.message });
       }
 
-      // ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА ДЛЯ АДМИНА
-      if (id === '878430902') {
-        db.run(`UPDATE users SET is_admin = 1 WHERE id = ?`, [id]);
-        console.log('👑 Админ принудительно установлен!');
-      }
+      // Генерируем JWT токен
+      const token = jwt.sign({ id: id }, JWT_SECRET, { expiresIn: '7d' });
 
-      res.json({ success: true, message: 'Добро пожаловать! +50 монет 🎁' });
+      res.json({
+        success: true,
+        message: 'Добро пожаловать! +50 монет 🎁',
+        token: token
+      });
     }
   );
 });
 
-app.get('/api/users/:userId', (req, res) => {
+app.get('/api/users/:userId', authMiddleware, (req, res) => {
   const { userId } = req.params;
+
+  // Проверяем, что запрашиваем свой профиль или админ
+  if (req.userId !== userId && !ADMIN_IDS.includes(req.userId)) {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
 
   db.get(
     `SELECT id, name, avatar, rating, wishes_granted, wishes_created, level, experience, coins, subscription_plan, subscription_until, is_admin, is_banned, created_at
@@ -522,7 +609,6 @@ app.get('/api/users/:userId', (req, res) => {
       if (!row) {
         return res.status(404).json({ error: 'Пользователь не найден' });
       }
-      console.log('👑 Данные пользователя из БД:', row);
       res.json(row);
     }
   );
@@ -885,64 +971,6 @@ app.get('/api/contributions/:wishId', (req, res) => {
   );
 });
 
-app.post('/api/confirm/:contributionId', (req, res) => {
-  const { contributionId } = req.params;
-
-  db.serialize(() => {
-    db.get(
-      `SELECT * FROM contributions WHERE id = ?`,
-      [contributionId],
-      (err, contribution) => {
-        if (err || !contribution) {
-          res.status(400).json({ error: 'Не найдено' });
-          return;
-        }
-
-        db.run(`UPDATE contributions SET status = 'approved', confirmed_at = CURRENT_TIMESTAMP WHERE id = ?`, [contributionId]);
-        db.run(`UPDATE wishes SET status = 'completed' WHERE id = ?`, [contribution.wish_id]);
-
-        db.run(
-          `UPDATE users SET wishes_granted = wishes_granted + 1, rating = rating + 5, experience = experience + 20
-           WHERE id = ?`,
-          [contribution.user_id]
-        );
-
-        db.run(`UPDATE users SET coins = coins + 20 WHERE id = ?`, [contribution.user_id]);
-
-        addUpdate('complete', { wishId: contribution.wish_id, userId: contribution.user_id });
-
-        // ПРИНУДИТЕЛЬНАЯ УСТАНОВКА АДМИНА ПРИ ЗАПУСКЕ
-        db.run(`UPDATE users SET is_admin = 1 WHERE id = '878430902'`, (err) => {
-          if (err) {
-            console.error('❌ Ошибка установки админа:', err);
-          } else {
-            console.log('👑 Админ принудительно установлен при запуске сервера');
-          }
-        });
-
-        // Обновляем прогресс квеста
-        db.run(
-          `INSERT INTO user_quest_progress (user_id, quest_id, progress) VALUES (?, 'quest_1', 1)
-           ON CONFLICT(user_id, quest_id) DO UPDATE SET progress = progress + 1`,
-          [contribution.user_id]
-        );
-
-        db.get(`SELECT user_id FROM wishes WHERE id = ?`, [contribution.wish_id], (err, wish) => {
-          if (!err && wish) {
-            db.run(`UPDATE users SET rating = rating + 2, coins = coins + 10 WHERE id = ?`, [wish.user_id]);
-            createNotification(wish.user_id, `🎉 Ваше желание исполнили!`, `/wish/${contribution.wish_id}`);
-            createNotification(contribution.user_id, `🎉 Вы исполнили желание! Получили +20 монет!`, `/wish/${contribution.wish_id}`);
-          }
-        });
-
-        checkLevelUp(contribution.user_id);
-        checkAchievements(contribution.user_id);
-
-        res.json({ message: '🎉 Желание исполнено! Исполнитель получил +20 монет!' });
-      }
-    );
-  });
-});
 
 // =============================================
 // ЧАТ
@@ -1014,38 +1042,61 @@ const COIN_PACKAGES = {
   2000: { price: 599, bonus: 600 }
 };
 
-app.post('/api/coins/buy', (req, res) => {
+app.post('/api/coins/buy', authMiddleware, (req, res) => {
   const { userId, amount } = req.body;
-  const pack = COIN_PACKAGES[amount];
 
+  // Проверяем, что userId совпадает с токеном
+  if (userId !== req.userId) {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+
+  const pack = COIN_PACKAGES[amount];
   if (!pack) {
     return res.status(400).json({ error: 'Неверный пакет' });
   }
 
   const totalCoins = amount + pack.bonus;
 
-  db.run(
-    'UPDATE users SET coins = coins + ? WHERE id = ?',
-    [totalCoins, userId],
-    function(err) {
-      if (err) {
-        res.status(400).json({ error: err.message });
-        return;
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
+
+    db.get('SELECT coins FROM users WHERE id = ?', [userId], (err, user) => {
+      if (err || !user) {
+        db.run('ROLLBACK');
+        return res.status(400).json({ error: 'Пользователь не найден' });
       }
 
       db.run(
-        `INSERT INTO transactions (id, user_id, amount, type, description)
-         VALUES (?, ?, ?, 'purchase', ?)`,
-        [uuidv4(), userId, pack.price, `Куплено ${totalCoins} монет`]
-      );
+        'UPDATE users SET coins = coins + ? WHERE id = ?',
+        [totalCoins, userId],
+        function(err) {
+          if (err) {
+            db.run('ROLLBACK');
+            return res.status(400).json({ error: err.message });
+          }
 
-      res.json({
-        success: true,
-        coins: totalCoins,
-        message: `💰 Пополнено! +${totalCoins} монет!`
-      });
-    }
-  );
+          const transactionId = uuidv4();
+          db.run(
+            `INSERT INTO transactions (id, user_id, amount, type, description)
+             VALUES (?, ?, ?, 'purchase', ?)`,
+            [transactionId, userId, pack.price, `Куплено ${totalCoins} монет`],
+            function(err) {
+              if (err) {
+                db.run('ROLLBACK');
+                return res.status(400).json({ error: err.message });
+              }
+              db.run('COMMIT');
+              res.json({
+                success: true,
+                coins: totalCoins,
+                message: `💰 Пополнено! +${totalCoins} монет!`
+              });
+            }
+          );
+        }
+      );
+    });
+  });
 });
 
 app.get('/api/coins/:userId', (req, res) => {
@@ -1070,54 +1121,75 @@ const SERVICES = {
   anonymous: { name: '🔒 Анонимное желание', cost: 20, description: 'Скрыть имя автора' }
 };
 
-app.post('/api/services/activate', (req, res) => {
+app.post('/api/services/activate', authMiddleware, (req, res) => {
   const { userId, serviceId, wishId } = req.body;
-  const service = SERVICES[serviceId];
 
+  if (userId !== req.userId) {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
+
+  const service = SERVICES[serviceId];
   if (!service) {
     return res.status(400).json({ error: 'Услуга не найдена' });
   }
 
-  db.get('SELECT coins FROM users WHERE id = ?', [userId], (err, user) => {
-    if (err || !user) {
-      return res.status(400).json({ error: 'Пользователь не найден' });
-    }
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
 
-    if (user.coins < service.cost) {
-      return res.status(400).json({
-        error: `Недостаточно монет! Нужно ${service.cost}, у вас ${user.coins}`
-      });
-    }
+    db.get('SELECT coins FROM users WHERE id = ?', [userId], (err, user) => {
+      if (err || !user) {
+        db.run('ROLLBACK');
+        return res.status(400).json({ error: 'Пользователь не найден' });
+      }
 
-    db.run('UPDATE users SET coins = coins - ? WHERE id = ?', [service.cost, userId]);
+      if (user.coins < service.cost) {
+        db.run('ROLLBACK');
+        return res.status(400).json({
+          error: `Недостаточно монет! Нужно ${service.cost}, у вас ${user.coins}`
+        });
+      }
 
-    if (serviceId === 'vip') {
       db.run(
-        `UPDATE wishes SET is_vip = 1, vip_until = datetime('now', '+7 days')
-         WHERE id = ? AND user_id = ?`,
-        [wishId, userId]
-      );
-    } else if (serviceId === 'urgent') {
-      db.run(
-        `UPDATE wishes SET is_urgent = 1 WHERE id = ? AND user_id = ?`,
-        [wishId, userId]
-      );
-    } else if (serviceId === 'anonymous') {
-      db.run(
-        `UPDATE wishes SET is_anonymous = 1 WHERE id = ? AND user_id = ?`,
-        [wishId, userId]
-      );
-    }
+        'UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?',
+        [service.cost, userId, service.cost],
+        function(err) {
+          if (err || this.changes === 0) {
+            db.run('ROLLBACK');
+            return res.status(400).json({ error: 'Недостаточно монет' });
+          }
 
-    db.run(
-      `INSERT INTO transactions (id, user_id, amount, type, description)
-       VALUES (?, ?, ?, 'spend', ?)`,
-      [uuidv4(), userId, service.cost, `Активация: ${service.name}`]
-    );
+          if (serviceId === 'vip') {
+            db.run(
+              `UPDATE wishes SET is_vip = 1, vip_until = datetime('now', '+7 days')
+               WHERE id = ? AND user_id = ?`,
+              [wishId, userId]
+            );
+          } else if (serviceId === 'urgent') {
+            db.run(
+              `UPDATE wishes SET is_urgent = 1 WHERE id = ? AND user_id = ?`,
+              [wishId, userId]
+            );
+          } else if (serviceId === 'anonymous') {
+            db.run(
+              `UPDATE wishes SET is_anonymous = 1 WHERE id = ? AND user_id = ?`,
+              [wishId, userId]
+            );
+          }
 
-    res.json({
-      success: true,
-      message: `✅ Услуга "${service.name}" активирована!`
+          const transactionId = uuidv4();
+          db.run(
+            `INSERT INTO transactions (id, user_id, amount, type, description)
+             VALUES (?, ?, ?, 'spend', ?)`,
+            [transactionId, userId, service.cost, `Активация: ${service.name}`]
+          );
+
+          db.run('COMMIT');
+          res.json({
+            success: true,
+            message: `✅ Услуга "${service.name}" активирована!`
+          });
+        }
+      );
     });
   });
 });
@@ -1134,8 +1206,12 @@ app.get('/api/services', (req, res) => {
 // ПОДПИСКА
 // =============================================
 
-app.post('/api/subscribe', (req, res) => {
+app.post('/api/subscribe', authMiddleware, (req, res) => {
   const { userId, plan } = req.body;
+
+  if (userId !== req.userId) {
+    return res.status(403).json({ error: 'Доступ запрещён' });
+  }
 
   const PLANS = {
     premium: { price: 299, name: 'Премиум' },
@@ -1147,30 +1223,52 @@ app.post('/api/subscribe', (req, res) => {
     return res.status(400).json({ error: 'Неверный план' });
   }
 
-  db.get('SELECT coins FROM users WHERE id = ?', [userId], (err, user) => {
-    if (err || !user) {
-      return res.status(400).json({ error: 'Пользователь не найден' });
-    }
+  db.serialize(() => {
+    db.run('BEGIN TRANSACTION');
 
-    if (user.coins < planData.price) {
-      return res.status(400).json({
-        error: `Недостаточно монет! Нужно ${planData.price}`
-      });
-    }
+    db.get('SELECT coins FROM users WHERE id = ?', [userId], (err, user) => {
+      if (err || !user) {
+        db.run('ROLLBACK');
+        return res.status(400).json({ error: 'Пользователь не найден' });
+      }
 
-    db.run('UPDATE users SET coins = coins - ? WHERE id = ?', [planData.price, userId]);
+      if (user.coins < planData.price) {
+        db.run('ROLLBACK');
+        return res.status(400).json({
+          error: `Недостаточно монет! Нужно ${planData.price}`
+        });
+      }
 
-    db.run(
-      `UPDATE users SET subscription_plan = ?, subscription_until = datetime('now', '+30 days')
-       WHERE id = ?`,
-      [plan, userId]
-    );
+      db.run(
+        'UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?',
+        [planData.price, userId, planData.price],
+        function(err) {
+          if (err || this.changes === 0) {
+            db.run('ROLLBACK');
+            return res.status(400).json({ error: 'Недостаточно монет' });
+          }
 
-    createNotification(userId, `✅ Подписка "${planData.name}" активирована на 30 дней!`, `/profile`);
+          db.run(
+            `UPDATE users SET subscription_plan = ?, subscription_until = datetime('now', '+30 days')
+             WHERE id = ?`,
+            [plan, userId]
+          );
 
-    res.json({
-      success: true,
-      message: `✅ Подписка "${planData.name}" активирована на 30 дней!`
+          const transactionId = uuidv4();
+          db.run(
+            `INSERT INTO transactions (id, user_id, amount, type, description)
+             VALUES (?, ?, ?, 'spend', ?)`,
+            [transactionId, userId, planData.price, `Подписка: ${planData.name}`]
+          );
+
+          db.run('COMMIT');
+          createNotification(userId, `✅ Подписка "${planData.name}" активирована на 30 дней!`, `/profile`);
+          res.json({
+            success: true,
+            message: `✅ Подписка "${planData.name}" активирована на 30 дней!`
+          });
+        }
+      );
     });
   });
 });
@@ -1380,67 +1478,80 @@ app.get('/api/updates', (req, res) => {
 // ДОНАТЫ
 // =============================================
 
-app.post('/api/donate', (req, res) => {
-  const { wishId, userId, amount, message, isAnonymous } = req.body;
-  const id = uuidv4();
+app.post('/api/donate', authMiddleware, (req, res) => {
+  try {
+    const validated = donateSchema.parse(req.body);
+    const { wishId, userId, amount, message, isAnonymous } = validated;
 
-  db.get('SELECT coins FROM users WHERE id = ?', [userId], (err, user) => {
-    if (err || !user) {
-      return res.status(400).json({ error: 'Пользователь не найден' });
+    if (userId !== req.userId) {
+      return res.status(403).json({ error: 'Доступ запрещён' });
     }
 
-    if (user.coins < amount) {
-      return res.status(400).json({ error: 'Недостаточно монет!' });
-    }
+    const id = uuidv4();
 
-    db.run('UPDATE users SET coins = coins - ? WHERE id = ?', [amount, userId]);
+    db.serialize(() => {
+      db.run('BEGIN TRANSACTION');
 
-    db.run(
-      `INSERT INTO donations (id, wish_id, user_id, amount, message, is_anonymous)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, wishId, userId, amount, message || '', isAnonymous || 0],
-      function(err) {
-        if (err) {
-          res.status(400).json({ error: err.message });
-          return;
+      db.get('SELECT coins FROM users WHERE id = ?', [userId], (err, user) => {
+        if (err || !user) {
+          db.run('ROLLBACK');
+          return res.status(400).json({ error: 'Пользователь не найден' });
+        }
+
+        if (user.coins < amount) {
+          db.run('ROLLBACK');
+          return res.status(400).json({ error: 'Недостаточно монет!' });
         }
 
         db.run(
-          `UPDATE wishes SET collected_amount = collected_amount + ? WHERE id = ?`,
-          [amount, wishId]
-        );
+          'UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?',
+          [amount, userId, amount],
+          function(err) {
+            if (err || this.changes === 0) {
+              db.run('ROLLBACK');
+              return res.status(400).json({ error: 'Недостаточно монет' });
+            }
 
-        db.get(`SELECT user_id FROM wishes WHERE id = ?`, [wishId], (err, wish) => {
-          if (!err && wish) {
-            createNotification(
-              wish.user_id,
-              `💰 Кто-то задонатил ${amount} монет на ваше желание!`,
-              `/wish/${wishId}`
-            );
-
-            db.get(
-              `SELECT target_amount, collected_amount FROM wishes WHERE id = ?`,
-              [wishId],
-              (err, wishData) => {
-                if (!err && wishData && wishData.collected_amount >= wishData.target_amount) {
-                  createNotification(
-                    wish.user_id,
-                    `🎉 Желание полностью собрано! Сумма ${wishData.target_amount} монет!`,
-                    `/wish/${wishId}`
-                  );
+            db.run(
+              `INSERT INTO donations (id, wish_id, user_id, amount, message, is_anonymous)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [id, wishId, userId, amount, message || '', isAnonymous || 0],
+              function(err) {
+                if (err) {
+                  db.run('ROLLBACK');
+                  return res.status(400).json({ error: err.message });
                 }
+
+                db.run(
+                  `UPDATE wishes SET collected_amount = collected_amount + ? WHERE id = ?`,
+                  [amount, wishId]
+                );
+
+                db.run('COMMIT');
+
+                db.get(`SELECT user_id FROM wishes WHERE id = ?`, [wishId], (err, wish) => {
+                  if (!err && wish) {
+                    createNotification(
+                      wish.user_id,
+                      `💰 Кто-то задонатил ${amount} монет на ваше желание!`,
+                      `/wish/${wishId}`
+                    );
+                  }
+                });
+
+                res.json({
+                  success: true,
+                  message: `💰 +${amount} монет внесено в копилку!`
+                });
               }
             );
           }
-        });
-
-        res.json({
-          success: true,
-          message: `💰 +${amount} монет внесено в копилку!`
-        });
-      }
-    );
-  });
+        );
+      });
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.errors || 'Неверные данные' });
+  }
 });
 
 app.get('/api/donations/:wishId', (req, res) => {
@@ -1518,118 +1629,108 @@ app.get('/api/gifts/:userId/stats', (req, res) => {
   );
 });
 
-app.post('/api/gift/send', (req, res) => {
-  console.log('📨 Запрос на отправку подарка:', req.body);
+app.post('/api/gift/send', authMiddleware, (req, res) => {
+  try {
+    const validated = giftSchema.parse(req.body);
+    const { fromUserId, toUserId, type, message } = validated;
 
-  const { fromUserId, toUserId, type, message } = req.body;
-
-  if (!fromUserId || !toUserId || !type) {
-    return res.status(400).json({
-      error: 'Не все обязательные поля заполнены',
-      required: ['fromUserId', 'toUserId', 'type']
-    });
-  }
-
-  const gift = GIFT_TYPES[type];
-  if (!gift) {
-    return res.status(400).json({
-      error: 'Неверный тип подарка',
-      availableTypes: Object.keys(GIFT_TYPES)
-    });
-  }
-
-  if (fromUserId === toUserId) {
-    return res.status(400).json({
-      error: 'Нельзя отправить подарок самому себе'
-    });
-  }
-
-  db.get('SELECT coins FROM users WHERE id = ?', [fromUserId], (err, user) => {
-    if (err) {
-      console.error('❌ Ошибка проверки баланса:', err);
-      return res.status(500).json({ error: err.message });
+    if (fromUserId !== req.userId) {
+      return res.status(403).json({ error: 'Доступ запрещён' });
     }
 
-    if (!user) {
-      return res.status(404).json({ error: 'Отправитель не найден' });
-    }
-
-    if (user.coins < gift.cost) {
+    const gift = GIFT_TYPES[type];
+    if (!gift) {
       return res.status(400).json({
-        error: `Недостаточно монет! Нужно ${gift.cost}, у вас ${user.coins}`,
-        need: gift.cost,
-        have: user.coins
+        error: 'Неверный тип подарка',
+        availableTypes: Object.keys(GIFT_TYPES)
       });
     }
 
-    db.get('SELECT id FROM users WHERE id = ?', [toUserId], (err, receiver) => {
-      if (err || !receiver) {
-        return res.status(404).json({ error: 'Получатель не найден' });
-      }
+    if (fromUserId === toUserId) {
+      return res.status(400).json({ error: 'Нельзя отправить подарок самому себе' });
+    }
 
-      db.run('UPDATE users SET coins = coins - ? WHERE id = ?', [gift.cost, fromUserId], function(err) {
-        if (err) {
-          console.error('❌ Ошибка списания монет:', err);
-          return res.status(500).json({ error: err.message });
+    db.serialize(() => {
+      db.run('BEGIN TRANSACTION');
+
+      db.get('SELECT coins FROM users WHERE id = ?', [fromUserId], (err, user) => {
+        if (err || !user) {
+          db.run('ROLLBACK');
+          return res.status(404).json({ error: 'Отправитель не найден' });
         }
 
-        const id = uuidv4();
+        if (user.coins < gift.cost) {
+          db.run('ROLLBACK');
+          return res.status(400).json({
+            error: `Недостаточно монет! Нужно ${gift.cost}, у вас ${user.coins}`,
+            need: gift.cost,
+            have: user.coins
+          });
+        }
 
-        db.run(
-          `INSERT INTO gifts (id, from_user_id, to_user_id, type, message, created_at)
-           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-          [id, fromUserId, toUserId, type, message || ''],
-          function(err) {
-            if (err) {
-              console.error('❌ Ошибка сохранения подарка:', err);
-              db.run('UPDATE users SET coins = coins + ? WHERE id = ?', [gift.cost, fromUserId]);
-              return res.status(500).json({ error: err.message });
-            }
-
-            console.log(`✅ Подарок ${type} отправлен от ${fromUserId} к ${toUserId}`);
-
-            createNotification(
-              toUserId,
-              `🎁 Вы получили подарок ${gift.emoji} ${gift.name}!`,
-              `/profile`
-            );
-
-            createNotification(
-              fromUserId,
-              `✅ Подарок ${gift.emoji} ${gift.name} отправлен! (-${gift.cost} монет)`,
-              `/profile`
-            );
-
-            db.get(
-              `SELECT COUNT(*) as count FROM gifts WHERE from_user_id = ?`,
-              [fromUserId],
-              (err, result) => {
-                if (!err && result && result.count >= 10) {
-                  db.run(
-                    `INSERT OR IGNORE INTO achievements (user_id, achievement_id) VALUES (?, 'philanthropist')`,
-                    [fromUserId]
-                  );
-                }
-              }
-            );
-
-            res.json({
-              success: true,
-              message: `🎁 Подарок ${gift.emoji} ${gift.name} отправлен!`,
-              gift: {
-                id: id,
-                type: type,
-                name: gift.name,
-                emoji: gift.emoji,
-                cost: gift.cost
-              },
-              remainingCoins: user.coins - gift.cost
-            });
+        db.get('SELECT id FROM users WHERE id = ?', [toUserId], (err, receiver) => {
+          if (err || !receiver) {
+            db.run('ROLLBACK');
+            return res.status(404).json({ error: 'Получатель не найден' });
           }
-        );
+
+          db.run(
+            'UPDATE users SET coins = coins - ? WHERE id = ? AND coins >= ?',
+            [gift.cost, fromUserId, gift.cost],
+            function(err) {
+              if (err || this.changes === 0) {
+                db.run('ROLLBACK');
+                return res.status(400).json({ error: 'Недостаточно монет' });
+              }
+
+              const id = uuidv4();
+              db.run(
+                `INSERT INTO gifts (id, from_user_id, to_user_id, type, message, created_at)
+                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+                [id, fromUserId, toUserId, type, message || ''],
+                function(err) {
+                  if (err) {
+                    db.run('ROLLBACK');
+                    return res.status(500).json({ error: err.message });
+                  }
+
+                  db.run('COMMIT');
+                  console.log(`✅ Подарок ${type} отправлен от ${fromUserId} к ${toUserId}`);
+
+                  createNotification(
+                    toUserId,
+                    `🎁 Вы получили подарок ${gift.emoji} ${gift.name}!`,
+                    `/profile`
+                  );
+
+                  createNotification(
+                    fromUserId,
+                    `✅ Подарок ${gift.emoji} ${gift.name} отправлен! (-${gift.cost} монет)`,
+                    `/profile`
+                  );
+
+                  res.json({
+                    success: true,
+                    message: `🎁 Подарок ${gift.emoji} ${gift.name} отправлен!`,
+                    gift: {
+                      id: id,
+                      type: type,
+                      name: gift.name,
+                      emoji: gift.emoji,
+                      cost: gift.cost
+                    },
+                    remainingCoins: user.coins - gift.cost
+                  });
+                }
+              );
+            }
+          );
+        });
       });
     });
-  });
+  } catch (error) {
+    return res.status(400).json({ error: error.errors || 'Неверные данные' });
+  }
 });
 
 app.get('/api/gifts/:userId', (req, res) => {
@@ -2995,6 +3096,16 @@ app.put('/api/admin/settings', async (req, res) => {
 
   await Promise.all(promises);
   res.json({ success: true, message: 'Настройки обновлены' });
+});
+
+// =============================================
+// ЦЕНТРАЛИЗОВАННАЯ ОБРАБОТКА ОШИБОК
+// =============================================
+app.use((err, req, res, next) => {
+  console.error('❌ Ошибка:', err.stack);
+  res.status(err.status || 500).json({
+    error: err.message || 'Внутренняя ошибка сервера'
+  });
 });
 
 // =============================================
