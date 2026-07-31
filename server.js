@@ -30,7 +30,6 @@ const db = new sqlite3.Database('./wishes.db');
 require('dotenv').config();
 const jwt = require('jsonwebtoken');
 const { z } = require('zod');
-const cors = require('cors');
 const economy = require('./config/economy.json');
 
 // =============================================
@@ -1034,14 +1033,6 @@ app.get('/api/chat/:wishId', (req, res) => {
 // МОНЕТЫ
 // =============================================
 
-const COIN_PACKAGES = {
-  50: { price: 29, bonus: 0 },
-  150: { price: 79, bonus: 20 },
-  350: { price: 149, bonus: 60 },
-  800: { price: 299, bonus: 200 },
-  2000: { price: 599, bonus: 600 }
-};
-
 app.post('/api/coins/buy', authMiddleware, (req, res) => {
   const { userId, amount } = req.body;
 
@@ -1114,12 +1105,6 @@ app.get('/api/coins/:userId', (req, res) => {
 // =============================================
 // УСЛУГИ
 // =============================================
-
-const SERVICES = {
-  vip: { name: '⭐ VIP-желание', cost: 50, description: 'Закреп в топе на 7 дней' },
-  urgent: { name: '🚀 Срочное желание', cost: 30, description: 'Исполнение за 24 часа' },
-  anonymous: { name: '🔒 Анонимное желание', cost: 20, description: 'Скрыть имя автора' }
-};
 
 app.post('/api/services/activate', authMiddleware, (req, res) => {
   const { userId, serviceId, wishId } = req.body;
