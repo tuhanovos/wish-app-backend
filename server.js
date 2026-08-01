@@ -591,11 +591,6 @@ app.post('/api/users', (req, res) => {
 app.get('/api/users/:userId', (req, res) => {
   const { userId } = req.params;
 
-  // Проверяем, что запрашиваем свой профиль или админ
-  if (req.userId !== userId && !ADMIN_IDS.includes(req.userId)) {
-    return res.status(403).json({ error: 'Доступ запрещён' });
-  }
-
   db.get(
     `SELECT id, name, avatar, rating, wishes_granted, wishes_created, level, experience, coins, subscription_plan, subscription_until, is_admin, is_banned, created_at
      FROM users WHERE id = ? OR vk_id = ?`,
