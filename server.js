@@ -588,7 +588,7 @@ app.post('/api/users', (req, res) => {
   );
 });
 
-app.get('/api/users/:userId', authMiddleware, (req, res) => {
+app.get('/api/users/:userId', (req, res) => {
   const { userId } = req.params;
 
   // Проверяем, что запрашиваем свой профиль или админ
