@@ -402,7 +402,16 @@ db.run(`
   db.run(`CREATE INDEX IF NOT EXISTS idx_wishes_user_id ON wishes(user_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_contributions_wish_id ON contributions(wish_id)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_contributions_user_id ON contributions(user_id)`);
+
+
+  db.run(`ALTER TABLE wishes ADD COLUMN image_url TEXT`, (err) => {
+    if (err && err.message.includes('duplicate column name')) {
+      console.log('✅ Колонка image_url уже существует');
+    }
+  });
+
 });
+
 
 // =============================================
 // ИНИЦИАЛИЗАЦИЯ ЕЖЕДНЕВНЫХ ЗАДАНИЙ
@@ -613,11 +622,11 @@ app.get('/api/users/:userId', (req, res) => {
 // =============================================
 
 app.post('/api/wishes', (req, res) => {
-  const { userId, title, description, category, isAnonymous, targetAmount } = req.body;
+  const { userId, title, description, category, isAnonymous, targetAmount, imageUrl } = req.body;
   const id = uuidv4();
 
   // Автоматически добавляем 10% комиссии
-  const commissionRate = 0.10; // 10%
+  const commissionRate = 0.10;
   const commission = Math.floor(targetAmount * commissionRate);
   const totalTarget = targetAmount + commission;
 
@@ -656,9 +665,9 @@ app.post('/api/wishes', (req, res) => {
             }
 
             db.run(
-              `INSERT INTO wishes (id, user_id, title, description, category, is_anonymous, target_amount, moderation_status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
-              [id, userId, title, description, category, isAnonymous || 0, targetAmount || 0],
+              `INSERT INTO wishes (id, user_id, title, description, category, is_anonymous, target_amount, moderation_status, image_url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+              [id, userId, title, description, category, isAnonymous || 0, targetAmount || 0, imageUrl || null],
               function(err) {
                 if (err) {
                   console.error('❌ Ошибка создания желания:', err);
