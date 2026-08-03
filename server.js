@@ -410,6 +410,49 @@ db.run(`
     }
   });
 
+  db.run(`ALTER TABLE wishes ADD COLUMN video_url TEXT`, (err) => {
+    if (err && err.message.includes('duplicate column name')) {
+      console.log('✅ Колонка video_url уже существует');
+    }
+  });
+
+  // =============================================
+  // АВТОМАТИЧЕСКОЕ СОЗДАНИЕ АДМИНА
+  // =============================================
+  db.get(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`, (err, row) => {
+    if (err) {
+      console.error('❌ Ошибка проверки админа:', err);
+      return;
+    }
+    if (!row && ADMIN_IDS.length > 0) {
+      const adminId = ADMIN_IDS[0]; // берём первый ID из списка
+      db.get(`SELECT id FROM users WHERE id = ?`, [adminId], (err, user) => {
+        if (err) {
+          console.error('❌ Ошибка поиска пользователя:', err);
+          return;
+        }
+        if (!user) {
+          db.run(
+            `INSERT INTO users (id, vk_id, name, avatar, coins, is_admin)
+            VALUES (?, ?, ?, ?, 50, 1)`,
+            [adminId, adminId, 'Администратор', 'https://vk.com/images/camera_100.png', 50],
+            (err) => {
+              if (err) console.error('❌ Ошибка создания админа:', err);
+              else console.log(`👑 Админ с ID ${adminId} создан автоматически`);
+            }
+          );
+        } else {
+          db.run(`UPDATE users SET is_admin = 1 WHERE id = ?`, [adminId], (err) => {
+            if (err) console.error('❌ Ошибка обновления админа:', err);
+            else console.log(`👑 Пользователь ${adminId} назначен админом`);
+          });
+        }
+      });
+    } else {
+      console.log('👑 Админ уже существует или ADMIN_IDS не задан');
+    }
+  });
+
 });
 
 
@@ -622,7 +665,7 @@ app.get('/api/users/:userId', (req, res) => {
 // =============================================
 
 app.post('/api/wishes', (req, res) => {
-  const { userId, title, description, category, isAnonymous, targetAmount, imageUrl } = req.body;
+  const { userId, title, description, category, isAnonymous, targetAmount, imageUrl, videoUrl } = req.body;
   const id = uuidv4();
 
   // Автоматически добавляем 10% комиссии
@@ -665,9 +708,9 @@ app.post('/api/wishes', (req, res) => {
             }
 
             db.run(
-              `INSERT INTO wishes (id, user_id, title, description, category, is_anonymous, target_amount, moderation_status, image_url)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-              [id, userId, title, description, category, isAnonymous || 0, targetAmount || 0, imageUrl || null],
+              `INSERT INTO wishes (id, user_id, title, description, category, is_anonymous, target_amount, moderation_status, image_url, video_url)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+              [id, userId, title, description, category, isAnonymous || 0, targetAmount || 0, imageUrl || null, videoUrl || null],
               function(err) {
                 if (err) {
                   console.error('❌ Ошибка создания желания:', err);
