@@ -416,43 +416,6 @@ db.run(`
     }
   });
 
-  // =============================================
-  // АВТОМАТИЧЕСКОЕ СОЗДАНИЕ АДМИНА
-  // =============================================
-  db.get(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`, (err, row) => {
-    if (err) {
-      console.error('❌ Ошибка проверки админа:', err);
-      return;
-    }
-    if (!row && ADMIN_IDS.length > 0) {
-      const adminId = ADMIN_IDS[0]; // берём первый ID из списка
-      db.get(`SELECT id FROM users WHERE id = ?`, [adminId], (err, user) => {
-        if (err) {
-          console.error('❌ Ошибка поиска пользователя:', err);
-          return;
-        }
-        if (!user) {
-          db.run(
-            `INSERT INTO users (id, vk_id, name, avatar, coins, is_admin)
-            VALUES (?, ?, ?, ?, 50, 1)`,
-            [adminId, adminId, 'Администратор', 'https://vk.com/images/camera_100.png', 50],
-            (err) => {
-              if (err) console.error('❌ Ошибка создания админа:', err);
-              else console.log(`👑 Админ с ID ${adminId} создан автоматически`);
-            }
-          );
-        } else {
-          db.run(`UPDATE users SET is_admin = 1 WHERE id = ?`, [adminId], (err) => {
-            if (err) console.error('❌ Ошибка обновления админа:', err);
-            else console.log(`👑 Пользователь ${adminId} назначен админом`);
-          });
-        }
-      });
-    } else {
-      console.log('👑 Админ уже существует или ADMIN_IDS не задан');
-    }
-  });
-
 });
 
 
@@ -476,8 +439,61 @@ db.serialize(() => {
 });
 
 // =============================================
+// ФУНКЦИЯ ИНИЦИАЛИЗАЦИИ АДМИНА
+// =============================================
+const initAdmin = () => {
+  return new Promise((resolve, reject) => {
+    db.get(`SELECT id FROM users WHERE is_admin = 1 LIMIT 1`, (err, row) => {
+      if (err) {
+        console.error('❌ Ошибка проверки админа:', err);
+        return reject(err);
+      }
+      if (!row && ADMIN_IDS.length > 0) {
+        const adminId = ADMIN_IDS[0];
+        db.get(`SELECT id FROM users WHERE id = ?`, [adminId], (err, user) => {
+          if (err) {
+            console.error('❌ Ошибка поиска пользователя:', err);
+            return reject(err);
+          }
+          if (!user) {
+            db.run(
+              `INSERT INTO users (id, vk_id, name, avatar, coins, is_admin)
+               VALUES (?, ?, ?, ?, 50, 1)`,
+              [adminId, adminId, 'Администратор', 'https://vk.com/images/camera_100.png', 50],
+              (err) => {
+                if (err) {
+                  console.error('❌ Ошибка создания админа:', err);
+                  reject(err);
+                } else {
+                  console.log(`👑 Админ с ID ${adminId} создан автоматически`);
+                  resolve();
+                }
+              }
+            );
+          } else {
+            db.run(`UPDATE users SET is_admin = 1 WHERE id = ?`, [adminId], (err) => {
+              if (err) {
+                console.error('❌ Ошибка обновления админа:', err);
+                reject(err);
+              } else {
+                console.log(`👑 Пользователь ${adminId} назначен админом`);
+                resolve();
+              }
+            });
+          }
+        });
+      } else {
+        console.log('👑 Админ уже существует или ADMIN_IDS не задан');
+        resolve();
+      }
+    });
+  });
+};
+
+// =============================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 // =============================================
+
 
 function createNotification(userId, message, link = null) {
   const id = uuidv4();
@@ -3143,15 +3159,21 @@ app.use((err, req, res, next) => {
 // =============================================
 // ЗАПУСК СЕРВЕРА
 // =============================================
-
-const PORT = 5000;
-app.listen(PORT, () => {
-  console.log('🚀 Сервер запущен на порту 5000');
-  console.log('💰 Монетизация активирована!');
-  console.log('💬 Чат доступен!');
-  console.log('🪙 Пакеты монет: 50, 150, 350, 800, 2000');
-  console.log('🎁 Подарки: ❤️ ⭐ 🌺 🎯 🏆 💎 👑 🌟');
-  console.log('🏠 Комнаты доступны!');
-  console.log('📋 Ежедневные задания активны!');
-  console.log('🛡️ Система модерации включена!');
-});
+initAdmin()
+  .then(() => {
+    const PORT = 5000;
+    app.listen(PORT, () => {
+      console.log('🚀 Сервер запущен на порту 5000');
+      console.log('💰 Монетизация активирована!');
+      console.log('💬 Чат доступен!');
+      console.log('🪙 Пакеты монет: 50, 150, 350, 800, 2000');
+      console.log('🎁 Подарки: ❤️ ⭐ 🌺 🎯 🏆 💎 👑 🌟');
+      console.log('🏠 Комнаты доступны!');
+      console.log('📋 Ежедневные задания активны!');
+      console.log('🛡️ Система модерации включена!');
+    });
+  })
+  .catch((err) => {
+    console.error('❌ Ошибка инициализации админа:', err);
+    process.exit(1);
+  });
