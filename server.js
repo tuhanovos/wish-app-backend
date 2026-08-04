@@ -1169,7 +1169,8 @@ app.get('/api/coins/:userId', (req, res) => {
 // УСЛУГИ
 // =============================================
 
-app.post('/api/services/activate', authMiddleware, (req, res) => {
+// app.post('/api/services/activate', authMiddleware, (req, res) => {
+  app.post('/api/services/activate', (req, res) => {
   const { userId, serviceId, wishId } = req.body;
 
   if (userId !== req.userId) {
@@ -1254,7 +1255,8 @@ app.get('/api/services', (req, res) => {
 // ПОДПИСКА
 // =============================================
 
-app.post('/api/subscribe', authMiddleware, (req, res) => {
+//app.post('/api/subscribe', authMiddleware, (req, res) => {
+  app.post('/api/subscribe', (req, res) => {
   const { userId, plan } = req.body;
 
   if (userId !== req.userId) {
@@ -1526,7 +1528,8 @@ app.get('/api/updates', (req, res) => {
 // ДОНАТЫ
 // =============================================
 
-app.post('/api/donate', authMiddleware, (req, res) => {
+// app.post('/api/donate', authMiddleware, (req, res) => {
+  app.post('/api/donate', (req, res) => {
   try {
     const validated = donateSchema.parse(req.body);
     const { wishId, userId, amount, message, isAnonymous } = validated;
@@ -1677,7 +1680,8 @@ app.get('/api/gifts/:userId/stats', (req, res) => {
   );
 });
 
-app.post('/api/gift/send', authMiddleware, (req, res) => {
+//app.post('/api/gift/send', authMiddleware, (req, res) => {
+  app.post('/api/gift/send', authMiddleware, (req, res) => {
   try {
     const validated = giftSchema.parse(req.body);
     const { fromUserId, toUserId, type, message } = validated;
@@ -2424,7 +2428,8 @@ app.post('/api/challenges/create', (req, res) => {
 });
 
 
-app.post('/api/rewards/buy', authMiddleware, (req, res) => {
+//app.post('/api/rewards/buy', authMiddleware, (req, res) => {
+  app.post('/api/rewards/buy', (req, res) => {
   const { userId, rewardId } = req.body;
   const reward = REAL_REWARDS[rewardId];
   if (!reward) return res.status(400).json({ error: 'Награда не найдена' });
@@ -2886,7 +2891,8 @@ app.get('/api/rewards', (req, res) => {
   res.json(rewards);
 });
 
-app.post('/api/rewards/buy', authMiddleware, (req, res) => {
+// app.post('/api/rewards/buy', authMiddleware, (req, res) => {
+  app.post('/api/rewards/buy', (req, res) => {
   const { userId, rewardId } = req.body;
   const reward = REAL_REWARDS[rewardId];
   if (!reward) return res.status(400).json({ error: 'Награда не найдена' });
