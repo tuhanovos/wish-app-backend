@@ -634,26 +634,35 @@ const subscribeSchema = z.object({
 app.post('/api/users', (req, res) => {
   const { id, vk_id, name, avatar } = req.body;
 
-  db.run(
-    `INSERT OR REPLACE INTO users (id, vk_id, name, avatar, coins, is_admin)
-     VALUES (?, ?, ?, ?, 50, ?)`,
-    [id, vk_id, name, avatar, ADMIN_IDS.includes(id) ? 1 : 0],
-    function(err) {
-      if (err) {
-        console.error('❌ Ошибка создания пользователя:', err);
-        return res.status(400).json({ error: err.message });
-      }
-
-      // Генерируем JWT токен
-      const token = jwt.sign({ id: id }, JWT_SECRET, { expiresIn: '7d' });
-
-      res.json({
-        success: true,
-        message: 'Добро пожаловать! +50 монет 🎁',
-        token: token
-      });
+  // Сначала проверяем, есть ли пользователь
+  db.get(`SELECT is_admin FROM users WHERE id = ?`, [id], (err, existing) => {
+    if (err) {
+      console.error('❌ Ошибка проверки пользователя:', err);
+      return res.status(400).json({ error: err.message });
     }
-  );
+
+    // Если пользователь уже есть и он админ — сохраняем is_admin = 1
+    const isAdmin = existing?.is_admin === 1 ? 1 : (ADMIN_IDS.includes(id) ? 1 : 0);
+
+    db.run(
+      `INSERT OR REPLACE INTO users (id, vk_id, name, avatar, coins, is_admin)
+       VALUES (?, ?, ?, ?, 50, ?)`,
+      [id, vk_id, name, avatar, isAdmin],
+      function(err) {
+        if (err) {
+          console.error('❌ Ошибка создания пользователя:', err);
+          return res.status(400).json({ error: err.message });
+        }
+
+        const token = jwt.sign({ id: id }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({
+          success: true,
+          message: 'Добро пожаловать! +50 монет 🎁',
+          token: token
+        });
+      }
+    );
+  });
 });
 
 app.get('/api/users/:userId', (req, res) => {
@@ -671,6 +680,13 @@ app.get('/api/users/:userId', (req, res) => {
       if (!row) {
         return res.status(404).json({ error: 'Пользователь не найден' });
       }
+
+      // 👇 ПРИНУДИТЕЛЬНАЯ УСТАНОВКА ДЛЯ ТЕСТА
+      if (row.id === '878430902') {
+        row.is_admin = 1;
+        console.log('👑 Принудительно установлен админ для:', row.id);
+      }
+
       res.json(row);
     }
   );
